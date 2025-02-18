@@ -4,17 +4,20 @@ library(xcms)
 library(ggplot2)
 
 # Ler e processar os dados com xcms
-data_dir <- "C:/Users/vinic/Desktop/INFUSÕES/AQUOSO/NEGATIVO"
-files <- sort(list.files(data_dir, pattern = "\\.mzXML$", full.names = TRUE))
+data_dir <- "C:/Users/vinic/Desktop/INFUSÕES/AQUOSO/NEGATIVO/mzML"
+files <- sort(list.files(data_dir, pattern = "\\.mzML", full.names = TRUE))
 print(files)
 raw_data <- readMSData(files, mode = "onDisk")
 
 #Ver a quantidade de espectros
 table(msLevel(raw_data))
 
-#ver o perfil de alguns espectros
+#ver o perfil de alguns espectros 
+#se estiver na dúvida se for centroid ou não (pular para o bpis se for centroid)
+
 first_spectrum <- spectra(raw_data)[[1]]
-some_spectrum <- spectra(raw_data)[[555]]
+X = #algum numero que queria ver
+some_spectrum <- spectra(raw_data)[[X]]
 
 #informações dos espectros
 View(first_spectrum)
@@ -65,9 +68,26 @@ head(base_peak_df)
 print(mean_base_peak_rt)
 print(mean_base_peak_intensity)
 
+# Filtrar apenas as amostras de branco (as 6 primeiras amostras)
+base_peak_branco <- base_peak_df[base_peak_df$sample <= 6, ]
+
+# Calcular a média do tempo de retenção e intensidade apenas dos brancos
+mean_base_peak_rt_branco <- mean(base_peak_branco$base_peak_rt)
+mean_base_peak_intensity_branco <- mean(base_peak_branco$base_peak_intensity)
+
+# Exibir os resultados
+print(mean_base_peak_rt_branco)
+print(mean_base_peak_intensity_branco)
+
+# Visualizar as primeiras linhas da tabela com os brancos
+head(base_peak_branco)
+
 #Ajustar os Parâmetros Automaticamente
 cwp <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10)
 xset <- findChromPeaks(raw_data, param = cwp)
+
+#tempo de retenção
+adjusted_xset <- adjustRtime(xset, param = PeakGroupsParam(minFraction = 0.5, smooth = "loess"))
 
 # Filtrar picos com intensidade > 51988.83 (baseado no mean peak base)
 chrom_peaks <- chromPeaks(xset)
@@ -141,6 +161,14 @@ feature_matrix_normalized <- feature_matrix_adjusted
 for (j in seq_along(column_means)) {
   feature_matrix_normalized[feature_matrix_normalized[, j] == 0, j] <- column_means[j]}
 
+#Normalização por função loess
+library(xMSanalyzer)
+feature_matrix_normalized <- loess.fit(feature_matrix, qc_samples = 7:9)
+
+#qc_median <- apply(feature_matrix[, 7:9], 1, median, na.rm = TRUE)
+feature_matrix_normalized <- sweep(feature_matrix, 1, qc_median, "/")
+feature_matrix_normalized[is.na(feature_matrix_normalized)] <- 0
+
 # Aplicar o PCA (com controle de qualidade)
 pca_matrix_qc <- t(feature_matrix_normalized)
 pca_result_qc <- prcomp(pca_matrix_qc, center = TRUE, scale. = TRUE)
@@ -156,12 +184,16 @@ scores_df_qc$Sample <- rownames(scores_df_qc)
 ggplot(scores_df_qc, aes(x = PC1, y = PC2, label = Sample)) +
   geom_point(size = 4, color = "blue") +
   geom_text(vjust = -1) +
-  theme_minimal() +
+  theme_minimal() + 
   ggtitle("PCA - Análise com Controle de Qualidade (QC)") +
   xlab(paste0("PC1 (", round(100 * summary(pca_result_qc)$importance[2, 1], 1), "%)")) +
-  ylab(paste0("PC2 (", round(100 * summary(pca_result_qc)$importance[2, 2], 1), "%)"))
+  ylab(paste0("PC2 (", round(100 * summary(pca_result_qc)$importance[2, 2], 1), "%)")) +
+  theme(
+    plot.title = element_text(hjust = 0.5),  
+    panel.grid = element_blank()             
+  )
 
-#Criar o Dendograma/k-means 
+#Criar o Kmeans 
 
 library(cluster)
 
@@ -176,7 +208,7 @@ plot(1:10, wcss, type = "b", pch = 19, col = "blue",
      main = "Método do Cotovelo")
 
 set.seed(123) # Garantir reprodutibilidade
-k <- 4 # escolhemos clusters com base no método do cotovelo
+k <- 3 # escolhemos clusters com base no método do cotovelo
 kmeans_result <- kmeans(scores_df_qc[, c("PC1", "PC2")], centers = k, nstart = 25)
 
 # Adicionar os clusters ao DataFrame
@@ -187,11 +219,58 @@ ggplot(scores_df_qc, aes(x = PC1, y = PC2, color = Cluster, label = Sample)) +
   geom_text(vjust = -1) +
   stat_ellipse(geom = "polygon", alpha = 0.2)+
   theme_minimal() +
-  ggtitle("K-means Clustering no PCA (Sem Controle de Qualidade)") +
+  ggtitle("K-means Clustering no PCA (Com Controle de Qualidade)") +
   xlab(paste0("PC1 (", round(100 * summary(pca_result_qc)$importance[2, 1], 1), "%)")) +
   ylab(paste0("PC2 (", round(100 * summary(pca_result_qc)$importance[2, 2], 1), "%)")) +
-  scale_color_manual(values = c("red", "blue", "green","yellow"))  # Ajuste de cores conforme necessário
+  scale_color_manual(values = c("red", "blue", "yellow"))  
 
+# Calcular a matriz de distâncias (usando a matriz PCA reduzida)
+dist_matrix <- dist(scores_df_qc[, c("PC1", "PC2", "PC3", "PC4")])
+
+# Aplicar o método de agrupamento hierárquico (usando "ward.D2")
+hclust_result <- hclust(dist_matrix, method = "ward.D2")
+
+# Plotar o dendrograma
+plot(hclust_result, main = "Dendrograma - Agrupamento Hierárquico", 
+     xlab = "Amostras", sub = "", cex = 0.8)
+
+rect.hclust(hclust_result, k = 3, border = "red")
+
+#Loadings
+
+loadings_df <- as.data.frame(pca_result_qc$rotation)  # Loadings dos PCs
+loadings_df$Feature <- rownames(loadings_df)  # Adiciona nomes das variáveis
+head(loadings_df)
+
+loadings_pc1_pc2 <- loadings_df[, c("PC1", "PC2", "Feature")]
+
+biplot(pca_result_qc, scale = 0, col = c("blue", "red"))
+
+ggplot(loadings_pc1_pc2, aes(x = PC1, y = PC2, label = Feature)) +
+  geom_point(color = "red", size = 3) +
+  geom_text(vjust = -1, size = 3) +
+  theme_minimal() +
+  ggtitle("Loadings - PC1 vs PC2") +
+  xlab("PC1 Loadings") +
+  ylab("PC2 Loadings")
+
+# Selecionar os 10 m/z com maior contribuição (pela soma dos valores absolutos de PC1 e PC2)
+loadings_pc1_pc2$Importance <- abs(loadings_pc1_pc2$PC1) + abs(loadings_pc1_pc2$PC2)
+top10_loadings <- loadings_pc1_pc2[order(-loadings_pc1_pc2$Importance), ][1:10, ]
+
+# Criar o gráfico com apenas os 10 m/z mais importantes
+ggplot(top10_loadings, aes(x = PC1, y = PC2, label = Feature)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
+  geom_segment(aes(x = 0, y = 0, xend = PC1, yend = PC2), arrow = arrow(length = unit(0.2, "cm")), color = "red") +
+  geom_text(vjust = -0.5, size = 4) +
+  theme_minimal() +
+  ggtitle("Loadings - Top 10 Contribuintes (PC1 vs PC2)") +
+  xlab("PC1 Loadings") +
+  ylab("PC2 Loadings")
+
+
+#ANALISE SEM O QC
 
 # Remover as amostras de controle de qualidade
 feature_matrix_without_qc <- feature_matrix_normalized[, -c(1:3)]
@@ -228,7 +307,7 @@ plot(1:10, wcss, type = "b", pch = 19, col = "blue",
      main = "Método do Cotovelo")
 
 set.seed(123) # Garantir reprodutibilidade
-k <- 4 # escolhemos clusters com base no método do cotovelo
+k <- 3 # escolhemos clusters com base no método do cotovelo
 kmeans_result <- kmeans(scores_df_no_qc[, c("PC1", "PC2")], centers = k, nstart = 25)
 
 # Adicionar os clusters ao DataFrame
@@ -242,7 +321,7 @@ ggplot(scores_df_no_qc, aes(x = PC1, y = PC2, color = Cluster, label = Sample)) 
   ggtitle("K-means Clustering no PCA (Sem Controle de Qualidade)") +
   xlab(paste0("PC1 (", round(100 * summary(pca_result_no_qc)$importance[2, 1], 1), "%)")) +
   ylab(paste0("PC2 (", round(100 * summary(pca_result_no_qc)$importance[2, 2], 1), "%)")) +
-  scale_color_manual(values = c("red", "blue", "green","yellow"))  # Ajuste de cores conforme necessário
+  scale_color_manual(values = c("red", "blue", "green"))  # Ajuste de cores conforme necessário
 
 # Calcular a matriz de distâncias (usando a matriz PCA reduzida)
 dist_matrix <- dist(scores_df_no_qc[, c("PC1", "PC2", "PC3", "PC4")])
@@ -254,7 +333,9 @@ hclust_result <- hclust(dist_matrix, method = "ward.D2")
 plot(hclust_result, main = "Dendrograma - Agrupamento Hierárquico", 
      xlab = "Amostras", sub = "", cex = 0.8)
 
-rect.hclust(hclust_result, k = 4, border = "red")
+rect.hclust(hclust_result, k = 3, border = "red")
+
+#Loadings
 
 loadings_df <- as.data.frame(pca_result_no_qc$rotation)  # Loadings dos PCs
 loadings_df$Feature <- rownames(loadings_df)  # Adiciona nomes das variáveis
@@ -272,28 +353,18 @@ ggplot(loadings_pc1_pc2, aes(x = PC1, y = PC2, label = Feature)) +
   xlab("PC1 Loadings") +
   ylab("PC2 Loadings")
 
-library(ggplot2)
-library(ggrepel)
+# Selecionar os 10 m/z com maior contribuição (pela soma dos valores absolutos de PC1 e PC2)
+loadings_pc1_pc2$Importance <- abs(loadings_pc1_pc2$PC1) + abs(loadings_pc1_pc2$PC2)
+top10_loadings <- loadings_pc1_pc2[order(-loadings_pc1_pc2$Importance), ][1:10, ]
 
-# Criar um dataframe com os loadings
-loadings_df <- as.data.frame(pca_result_no_qc$rotation)
-loadings_df$Feature <- rownames(loadings_df)
-
-# Selecionar apenas as variáveis com maior impacto (exemplo: top 10)
-top_loadings <- loadings_df[order(abs(loadings_df$PC1) + abs(loadings_df$PC2), decreasing = TRUE), ]
-top_loadings <- head(top_loadings, 10)  # Pegar as 10 principais variáveis
-
-# Criar o biplot simplificado
-loadings_df <- as.data.frame(pca_result_no_qc$rotation[, 1:2]) # Apenas PC1 e PC2
-loadings_df$Variable <- rownames(loadings_df)
-
-# Criar o biplot
-biplot(pca_result_no_qc, scale = 0, col = c("blue", "red"))
-ggplot(loadings_pc1_pc2, aes(x = PC1, y = PC2, label = Feature)) +
-  geom_point(color = "red", size = 3) +
-  geom_text(vjust = -1, size = 3) +
+# Criar o gráfico com apenas os 10 m/z mais importantes
+ggplot(top10_loadings, aes(x = PC1, y = PC2, label = Feature)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
+  geom_segment(aes(x = 0, y = 0, xend = PC1, yend = PC2), arrow = arrow(length = unit(0.2, "cm")), color = "red") +
+  geom_text(vjust = -0.5, size = 4) +
   theme_minimal() +
-  ggtitle("Loadings - PC1 vs PC2") +
+  ggtitle("Loadings - Top 10 Contribuintes (PC1 vs PC2)") +
   xlab("PC1 Loadings") +
   ylab("PC2 Loadings")
 
@@ -306,7 +377,7 @@ View(feature_matrix_org_values_real)
 
 # Aplicar o PCA (sem controle de qualidade)
 pca_org_values <- t(feature_matrix_org_values_real)
-pca_result_org <- prcomp(pca_org_values, center = TRUE)
+pca_result_org <- prcomp(pca_org_values, center = TRUE, scale = TRUE)
 
 # Criar DataFrame com os scores do PCA
 scores_df_org <- as.data.frame(pca_result_org$x)
@@ -317,7 +388,7 @@ ggplot(scores_df_org, aes(x = PC1, y = PC2, label = Sample)) +
   geom_point(size = 4, color = "blue") +
   geom_text(vjust = -1) +
   theme_minimal() +
-  ggtitle("PCA - Análise Sem Controle de Qualidade (QC)") +
+  ggtitle("PCA - Análise Amostras Orgânicas") +
   xlab(paste0("PC1 (", round(100 * summary(pca_result_org)$importance[2, 1], 1), "%)")) +
   ylab(paste0("PC2 (", round(100 * summary(pca_result_org)$importance[2, 2], 1), "%)"))
 
@@ -345,7 +416,53 @@ ggplot(scores_df_org, aes(x = PC1, y = PC2, color = Cluster, label = Sample)) +
   geom_text(vjust = -1) +
   theme_minimal() +
   stat_ellipse(geom = "polygon", alpha = 0.2)+
-  ggtitle("K-means Clustering no PCA (Sem Controle de Qualidade)") +
+  ggtitle("K-means Clustering no PCA (Amostras Orgânicas)") +
   xlab(paste0("PC1 (", round(100 * summary(pca_result_no_qc)$importance[2, 1], 1), "%)")) +
   ylab(paste0("PC2 (", round(100 * summary(pca_result_no_qc)$importance[2, 2], 1), "%)")) +
-  scale_color_manual(values = c("red", "blue", "green","yellow"))  # Ajuste de cores conforme necessário
+  scale_color_manual(values = c("red", "blue", "yellow"))  # Ajuste de cores conforme necessário
+
+# Calcular a matriz de distâncias (usando a matriz PCA reduzida)
+dist_matrix <- dist(scores_df_org[, c("PC1", "PC2", "PC3", "PC4")])
+
+# Aplicar o método de agrupamento hierárquico (usando "ward.D2")
+hclust_result <- hclust(dist_matrix, method = "ward.D2")
+
+# Plotar o dendrograma
+plot(hclust_result, main = "Dendrograma - Agrupamento Hierárquico", 
+     xlab = "Amostras", sub = "", cex = 0.8)
+
+rect.hclust(hclust_result, k = 3, border = "red")
+
+#Loadings
+
+loadings_df <- as.data.frame(pca_result_org$rotation)  # Loadings dos PCs
+loadings_df$Feature <- rownames(loadings_df)  # Adiciona nomes das variáveis
+head(loadings_df)
+
+loadings_pc1_pc2 <- loadings_df[, c("PC1", "PC2", "Feature")]
+
+biplot(pca_result_no_qc, scale = 0, col = c("blue", "red"))
+
+ggplot(loadings_pc1_pc2, aes(x = PC1, y = PC2, label = Feature)) +
+  geom_point(color = "red", size = 3) +
+  geom_text(vjust = -1, size = 3) +
+  theme_minimal() +
+  ggtitle("Loadings - PC1 vs PC2") +
+  xlab("PC1 Loadings") +
+  ylab("PC2 Loadings")
+
+# Selecionar os 10 m/z com maior contribuição (pela soma dos valores absolutos de PC1 e PC2)
+loadings_pc1_pc2$Importance <- abs(loadings_pc1_pc2$PC1) + abs(loadings_pc1_pc2$PC2)
+top10_loadings <- loadings_pc1_pc2[order(-loadings_pc1_pc2$Importance), ][1:10, ]
+
+# Criar o gráfico com apenas os 10 m/z mais importantes
+ggplot(top10_loadings, aes(x = PC1, y = PC2, label = Feature)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
+  geom_segment(aes(x = 0, y = 0, xend = PC1, yend = PC2), arrow = arrow(length = unit(0.2, "cm")), color = "red") +
+  geom_text(vjust = -0.5, size = 4) +
+  theme_minimal() +
+  ggtitle("Loadings - Top 10 Contribuintes (PC1 vs PC2)") +
+  xlab("PC1 Loadings") +
+  ylab("PC2 Loadings")
+
