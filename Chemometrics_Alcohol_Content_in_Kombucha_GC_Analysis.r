@@ -1,3 +1,20 @@
+# Instalar pacotes se necessário
+install.packages("rsm")
+library(rsm)
+
+# Definir os fatores do CCD
+ccd_design <- ccd(~ Temperature + Time + Ultrasound, n0 = 5, alpha = "rotatable")
+
+# Ajustar para 3 variáveis
+set.seed(123)  # Para reprodutibilidade
+ccd_design <- as.data.frame(ccd_design)
+
+# Substituir os níveis de Ultrassom com 2 níveis categóricos: "com" e "sem"
+ccd_design$Ultrasound <- factor(rep(c("com", "sem"), length.out = nrow(ccd_design)))
+
+# Exibir o design final
+print(ccd_design)
+
 # Upload packages 
 library(ggplot2)
 library(dplyr)
