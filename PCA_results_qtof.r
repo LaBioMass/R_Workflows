@@ -3,13 +3,13 @@ library(MSnbase)
 library(xcms)
 library(ggplot2)
 
-# Ler e processar os dados com xcms
+# Ler e processar os dados com o pacote xcms que vamos usar
 data_dir <- "C:/Users/vinic/Desktop/INFUSÕES/AQUOSO/NEGATIVO/mzML"
 files <- sort(list.files(data_dir, pattern = "\\.mzML", full.names = TRUE))
 print(files)
 raw_data <- readMSData(files, mode = "onDisk")
 
-#Ver a quantidade de espectros
+#Ver a quantidade de espectros e o perfil de cada (1 = ms1; 2 = ms2 e assim por diante)
 table(msLevel(raw_data))
 
 #ver o perfil de alguns espectros 
@@ -39,7 +39,7 @@ plot(mz(first_spectrum_centroid), intensity(first_spectrum_centroid), type = "h"
 
 View(first_spectrum_centroid)
 
-# Criar o Base Peak Chromatogram (BPC)
+# Criar o Base Peak Chromatogram (BPC) 
 bpis <- chromatogram(raw_data, aggregationFun = "max")
 
 #Plote um cromatograma total (TIC)
@@ -59,7 +59,7 @@ base_peak_list <- lapply(seq_along(bpis), function(i) {
 # Juntar tudo em um único data frame
 base_peak_df <- do.call(rbind, base_peak_list)
 
-# Calcular a média dos tempos de retenção e intensidades
+# Calcular a média dos tempos de retenção e intensidades (caso queira usar as medias como filtro)
 mean_base_peak_rt <- mean(base_peak_df$base_peak_rt)
 mean_base_peak_intensity <- mean(base_peak_df$base_peak_intensity)
 head(base_peak_df)
@@ -69,6 +69,7 @@ print(mean_base_peak_rt)
 print(mean_base_peak_intensity)
 
 # Filtrar apenas as amostras de branco (as 6 primeiras amostras)
+#é recomendável que na hora de fazer seu diretorio os brancos sejam as primeiras amostras
 base_peak_branco <- base_peak_df[base_peak_df$sample <= 6, ]
 
 # Calcular a média do tempo de retenção e intensidade apenas dos brancos
@@ -82,25 +83,130 @@ print(mean_base_peak_intensity_branco)
 # Visualizar as primeiras linhas da tabela com os brancos
 head(base_peak_branco)
 
-#Ajustar os Parâmetros Automaticamente
-cwp <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10)
-xset <- findChromPeaks(raw_data, param = cwp)
+#Ajustar os Parâmetros COM TESTES 
 
-#tempo de retenção
-adjusted_xset <- adjustRtime(xset, param = PeakGroupsParam(minFraction = 0.5, smooth = "loess"))
+#primeiro testar o snthresh
+# ** O parâmetro snthresh define o limiar mínimo da relação sinal-ruído (S/N) para um pico ser detectado 
+# Apenas picos com S/N maior que snthresh serão considerados válidos.
 
-# Filtrar picos com intensidade > 51988.83 (baseado no mean peak base)
-chrom_peaks <- chromPeaks(xset)
-filtered_peaks <- chrom_peaks[chrom_peaks[, "into"] > 51988.83, ]
+cwp_low <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 5, fitgauss = TRUE)
+cwp_mid <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, fitgauss = TRUE)
+cwp_high <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 20, fitgauss = TRUE)
+
+xset_low <- findChromPeaks(raw_data, param = cwp_low)
+xset_mid <- findChromPeaks(raw_data, param = cwp_mid)
+xset_high <- findChromPeaks(raw_data, param = cwp_high)
+
+nrow(chromPeaks(xset_low))  # Com snthresh = 5
+nrow(chromPeaks(xset_mid))  # Com snthresh = 10
+nrow(chromPeaks(xset_high)) # Com snthresh = 20
+
+#voce pode testar duas configurações até o fim e ver como isso afeta seu resultado estatistico
+#mas no caso achei pertinente 10
+
+#TESTAR O NOISE (USAR O THRESH CORRETO DAI)
+#ajustar valores de noise conforme sua necessidade e o que tem no cromatograma
+
+cwp_default <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, fitgauss = TRUE)
+cwp_noise1 <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, noise = 500, fitgauss = TRUE)
+cwp_noise2 <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, noise = 5000, fitgauss = TRUE)
+
+xset_default <- findChromPeaks(raw_data, param = cwp_default)
+xset_noise1 <- findChromPeaks(raw_data, param = cwp_noise1)
+xset_noise2 <- findChromPeaks(raw_data, param = cwp_noise2)
+
+nrow(chromPeaks(xset_default)) # Sem filtro de noise
+nrow(chromPeaks(xset_noise1))  # Com noise = 500
+nrow(chromPeaks(xset_noise2))  # Com noise = 5000
+
+#TESTAR A LARGURA DO PICO
+#USAR O THRESH CORRETO E O NOISE CORRETO
+# Definir diferentes configurações de peakwidth
+cwp_narrow <- CentWaveParam(ppm = 10, peakwidth = c(2, 10), snthresh = 10, noise = 500 , fitgauss = TRUE)
+cwp_medium <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, noise = 500, fitgauss = TRUE)
+cwp_wide   <- CentWaveParam(ppm = 10, peakwidth = c(10, 50), snthresh = 10, noise = 500, fitgauss = TRUE)
+
+# Aplicar nos dados
+xset_narrow <- findChromPeaks(raw_data, param = cwp_narrow)
+xset_medium <- findChromPeaks(raw_data, param = cwp_medium)
+xset_wide   <- findChromPeaks(raw_data, param = cwp_wide)
+
+# Comparar número de picos detectados
+cat("Picos detectados (peakwidth 2-10s):", nrow(chromPeaks(xset_narrow)), "\n")
+cat("Picos detectados (peakwidth 5-20s):", nrow(chromPeaks(xset_medium)), "\n")
+cat("Picos detectados (peakwidth 10-50s):", nrow(chromPeaks(xset_wide)), "\n")
+
+#ACHO QUE UM AJUSTE MAIS FINO DE 4 A 25
+#OU ALGO ENTRE 5 E 30 PODE SER ÚTIL
+
+#prefiltragem 
+
+# Diferentes configurações de prefilter
+cwp_low_prefilter  <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, noise = 500, prefilter = c(3, 100), fitgauss = TRUE)
+cwp_medium_prefilter <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, noise = 500, prefilter = c(5, 500), fitgauss = TRUE)
+cwp_strict_prefilter <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, noise = 500, prefilter = c(10, 1000),fitgauss = TRUE)
+
+# Aplicar nos dados
+xset_low_prefilter  <- findChromPeaks(raw_data, param = cwp_low_prefilter)
+xset_medium_prefilter <- findChromPeaks(raw_data, param = cwp_medium_prefilter)
+xset_strict_prefilter <- findChromPeaks(raw_data, param = cwp_strict_prefilter)
+
+# Comparar número de picos detectados
+cat("Picos detectados (prefilter 3,100):", nrow(chromPeaks(xset_low_prefilter)), "\n")
+cat("Picos detectados (prefilter 5,500):", nrow(chromPeaks(xset_medium_prefilter)), "\n")
+cat("Picos detectados (prefilter 10,1000):", nrow(chromPeaks(xset_strict_prefilter)), "\n")
+
+#tempo de retenção (nao esquecer de carregar o setup escolhido)
+n <- 3
+I <- 100
+cwp_setup <- CentWaveParam(ppm = 10, peakwidth = c(5, 20), snthresh = 10, prefilter = c(n, I), noise = 100,  fitgauss = FALSE)
+xset_setup <- findChromPeaks(raw_data, param = cwp_setup)
+nrow(chromPeaks(xset_setup))
+table(chromPeaks(xset_setup)[, "sample"])
+
+str(xset_setup)
+head(chromPeaks(xset_setup))
+
+#Agrupar os grupos 
+
+pdp <- PeakDensityParam(
+  sampleGroups = rep(1, length(sampleNames(raw_data))), 
+  bw = 15,
+  minFraction = 0.01,
+  minSamples = 1)
+
+# Agrupar picos
+xset_grouped <- groupChromPeaks(xset_setup, param = pdp)
+head(xset_grouped)
+
+# Verifique se os picos estão sendo agrupados corretamente
+table(chromPeaks(xset_grouped)[, "sample"])
+
+hist(chromPeaks(xset_grouped)[, "rt"], breaks = 50, main = "Distribuição do Tempo de Retenção", xlab = "Tempo de Retenção (s)")
+
+pdp_adjust <- PeakGroupsParam(
+  minFraction = 0.5,  # Mínimo de 50% das amostras precisam ter o pico para ser usado no ajuste
+  smooth = "loess",   # Ajuste suavizado LOESS
+  span = 0.5          # Parâmetro de suavização
+)
+
+# Aplicar a correção do tempo de retenção
+xset_adjusted <- adjustRtime(xset_grouped, param = pdp_adjust)
+
+# Visualizar os ajustes no tempo de retenção
+head(adjustedRtime(xset_adjusted))
+
+
+# Filtrar picos com intensidade > 5571.167 (baseado no mean base peak do branco)
+chrom_peaks <- chromPeaks(xset_grouped)
+filtered_peaks <- chrom_peaks[chrom_peaks[, "into"] > 5571.167, ]
 head(chrom_peaks)
-
-# Agrupar picos cromatográficos
-xset_grouped <- groupChromPeaks(xset, param = PeakDensityParam(sampleGroups = rep(1, length(files))))
 
 # Verificar as definições de features após o agrupamento
 feature_defs <- featureDefinitions(xset_grouped)
 head(feature_defs)
 
+#A partir daqui temos a parte de quimiometria
 # Criar a matriz de m/z por amostras
 
 feature_matrix <- featureValues(xset_grouped, value = "into")
@@ -162,10 +268,11 @@ for (j in seq_along(column_means)) {
   feature_matrix_normalized[feature_matrix_normalized[, j] == 0, j] <- column_means[j]}
 
 #Normalização por função loess
+install.packages(xMSanalyzer)
 library(xMSanalyzer)
 feature_matrix_normalized <- loess.fit(feature_matrix, qc_samples = 7:9)
 
-#qc_median <- apply(feature_matrix[, 7:9], 1, median, na.rm = TRUE)
+qc_median <- apply(feature_matrix[, 7:9], 1, median, na.rm = TRUE)
 feature_matrix_normalized <- sweep(feature_matrix, 1, qc_median, "/")
 feature_matrix_normalized[is.na(feature_matrix_normalized)] <- 0
 
